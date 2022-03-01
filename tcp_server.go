@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 
+	"lalvarez.me/mcgo/client"
 	"lalvarez.me/mcgo/packets"
 )
 
@@ -13,9 +15,12 @@ const (
 	CONN_PORT        = "25565"
 	CONN_TYPE        = "tcp"
 	CONN_BUFFER_SIZE = 8192
+	MAX_CLIENTS      = 10
 )
 
 func main() {
+
+	clientList := make(map[string]*client.ClientState, 0)
 
 	l, err := net.Listen(CONN_TYPE, CONN_HOST+":"+CONN_PORT)
 	if err != nil {
@@ -24,19 +29,29 @@ func main() {
 	}
 	defer l.Close()
 	fmt.Println("Listening on " + CONN_HOST + ":" + CONN_PORT)
-	// Iterate over connections
+
 	for {
 		conn, err := l.Accept()
 		if err != nil {
 			fmt.Println("Error accepting: ", err.Error())
 			os.Exit(2)
 		}
-		// Handle connections
-		go handleRequest(conn)
+		// Get connection IP and check if the client is already connected
+		connAddress := strings.Split(conn.RemoteAddr().String(), ":")[0]
+		var clientState *client.ClientState
+		var ok bool
+		if clientState, ok = clientList[connAddress]; ok {
+			fmt.Printf("Client %s already connected\n", connAddress)
+		} else {
+			fmt.Printf("Client %s not connected. Creating a new client state object\n", connAddress)
+			clientState = new(client.ClientState)
+			clientList[connAddress] = clientState
+		}
+		go handleRequest(conn, clientState)
 	}
 }
 
-func handleRequest(conn net.Conn) {
+func handleRequest(conn net.Conn, clientState *client.ClientState) {
 	// Show client IP and port
 	fmt.Printf("\nServing %s\n", conn.RemoteAddr().String())
 	// Create a buffer for receiving client data
@@ -47,10 +62,16 @@ func handleRequest(conn net.Conn) {
 	} else {
 		fmt.Printf("Read %d bytes\n", nbytes)
 	}
-	handleServerListPing(buf, nbytes)
+	// Handle the server list ping
+	if clientState.State == client.Uninitialized || clientState.State == client.Handshake {
+		handleServerListPing(buf, nbytes)
+		clientState.AdvanceServerListPingState()
+	}
+
 	// Write back to client
 	conn.Write([]byte("Message received.\n"))
 	// Kill connection
+	fmt.Println()
 	conn.Close()
 }
 
@@ -74,7 +95,7 @@ func handleServerListPing(buffer []byte, nbytes int) {
 		fmt.Println("Error parsing packet header in server list ping: ", err.Error())
 	}
 	fmt.Println(pktHeader)
-
+	// If the packet is a handshake packet, parse it
 	if pktHeader.PacketID.N == packets.PACKET_ID_HANDSHAKE {
 		// Parse Handshake Packet
 		pktHandshake, _, err := packets.ParseHandshakePacket(reducedBuffer[off:])
